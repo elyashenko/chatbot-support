@@ -45,7 +45,8 @@ services:
       - chatbot_network
     restart: unless-stopped
 
-  # Frontend (React)
+  # Frontend (React) - Node.js 22 LTS
+  # Для использования других версий: измените dockerfile
   frontend:
     build:
       context: ./frontend
