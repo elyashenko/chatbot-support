@@ -1,8 +1,8 @@
 import React, { useRef, useEffect } from 'react';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
-import { ChatMessage as ChatMessageType } from '../../types/chat.types';
-import { Loader2, Wifi, WifiOff } from 'lucide-react';
+import { type ChatMessage as ChatMessageType } from '../../types/chat.types';
+import { Wifi, WifiOff } from 'lucide-react';
 
 interface ChatContainerProps {
   messages: ChatMessageType[];

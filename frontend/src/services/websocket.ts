@@ -1,4 +1,4 @@
-import { WebSocketMessage } from '../types/chat.types';
+import { type WebSocketMessage } from '../types/chat.types';
 
 type MessageHandler = (message: WebSocketMessage) => void;
 type ConnectionHandler = (connected: boolean) => void;
@@ -15,7 +15,7 @@ class WebSocketService {
   private isConnecting = false;
 
   constructor() {
-    this.url = process.env.REACT_APP_WS_URL || 'ws://localhost:8000';
+    this.url = import.meta.env.VITE_WS_URL || 'ws://localhost:8000';
     this.userId = '1'; // Временное решение, в реальном приложении получать из аутентификации
   }
 

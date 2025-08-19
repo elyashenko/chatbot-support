@@ -38,7 +38,7 @@ export interface ContextSource {
 }
 
 export interface WebSocketMessage {
-  type: 'chat' | 'typing' | 'session' | 'connection' | 'chat_response' | 'error';
+  type: 'chat' | 'typing' | 'session' | 'connection' | 'chat_response' | 'error' | 'sessions_list' | 'messages_list';
   message?: string;
   session_id?: string;
   preferred_model?: string;
@@ -53,6 +53,7 @@ export interface WebSocketMessage {
   sessions?: ChatSession[];
   messages?: ChatMessage[];
   timestamp?: number;
+  title?: string;
 }
 
 export interface ApiError {

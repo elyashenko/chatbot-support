@@ -1,101 +1,91 @@
-import axios, { AxiosInstance, AxiosResponse } from 'axios';
-import { 
-  ChatMessage, 
-  ChatSession, 
-  ChatResponse, 
-  SystemStats, 
-  ApiError 
+import type {
+  ChatMessage,
+  ChatSession,
+  ChatResponse,
+  SystemStats
 } from '../types/chat.types';
 
-class ApiService {
-  private api: AxiosInstance;
+const apiRequest = async <T>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<T> => {
+  const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const url = `${baseUrl}${endpoint}`;
 
-  constructor() {
-    this.api = axios.create({
-      baseURL: process.env.REACT_APP_API_URL || 'http://localhost:8000',
-      timeout: 30000,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-    // Добавляем токен авторизации (временное решение)
-    this.api.interceptors.request.use((config) => {
-      config.headers.Authorization = 'Bearer test-token';
-      return config;
-    });
+  const config: RequestInit = {
+    ...options,
+    signal: controller.signal,
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer test-token',
+      ...options.headers,
+    },
+  };
 
-    // Обработка ошибок
-    this.api.interceptors.response.use(
-      (response) => response,
-      (error) => {
-        console.error('API Error:', error);
-        return Promise.reject(error);
-      }
-    );
+  try {
+    const response = await fetch(url, config);
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API Error: ${response.status} ${response.statusText} – ${errorText}`);
+    }
+
+    const contentType = response.headers.get('content-type');
+    if (contentType?.includes('application/json')) {
+      return response.json();
+    }
+
+    return response.text() as unknown as T;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('Request timeout');
+    }
+    throw err;
   }
+};
 
-  // Чат API
-  async sendMessage(message: string, sessionId?: string, preferredModel?: string): Promise<ChatResponse> {
-    const response: AxiosResponse<ChatResponse> = await this.api.post('/api/chat/message', {
-      message,
-      session_id: sessionId,
-      preferred_model: preferredModel,
-    });
-    return response.data;
-  }
+export const chatApi = {
+  sendMessage: (message: string, sessionId?: string, preferredModel?: string) =>
+    apiRequest<ChatResponse>('/api/chat/message', {
+      method: 'POST',
+      body: JSON.stringify({ message, session_id: sessionId, preferred_model: preferredModel }),
+    }),
 
-  async getSessions(limit: number = 20): Promise<ChatSession[]> {
-    const response: AxiosResponse<ChatSession[]> = await this.api.get(`/api/chat/sessions?limit=${limit}`);
-    return response.data;
-  }
+  getSessions: (limit = 20) =>
+    apiRequest<ChatSession[]>(`/api/chat/sessions?limit=${limit}`),
 
-  async getSessionMessages(sessionId: string, limit: number = 50): Promise<ChatMessage[]> {
-    const response: AxiosResponse<ChatMessage[]> = await this.api.get(
-      `/api/chat/sessions/${sessionId}/messages?limit=${limit}`
-    );
-    return response.data;
-  }
+  getSessionMessages: (sessionId: string, limit = 50) =>
+    apiRequest<ChatMessage[]>(`/api/chat/sessions/${sessionId}/messages?limit=${limit}`),
 
-  async updateSessionTitle(sessionId: string, title: string): Promise<{ message: string }> {
-    const response: AxiosResponse<{ message: string }> = await this.api.put(
-      `/api/chat/sessions/${sessionId}/title`,
-      { title }
-    );
-    return response.data;
-  }
+  updateSessionTitle: (sessionId: string, title: string) =>
+    apiRequest<{ message: string }>(`/api/chat/sessions/${sessionId}/title`, {
+      method: 'PUT',
+      body: JSON.stringify({ title }),
+    }),
 
-  async deleteSession(sessionId: string): Promise<{ message: string }> {
-    const response: AxiosResponse<{ message: string }> = await this.api.delete(
-      `/api/chat/sessions/${sessionId}`
-    );
-    return response.data;
-  }
+  deleteSession: (sessionId: string) =>
+    apiRequest<{ message: string }>(`/api/chat/sessions/${sessionId}`, {
+      method: 'DELETE',
+    }),
 
-  async getAvailableModels(): Promise<{
-    available_models: string[];
-    default_model: string;
-    fallback_models: string[];
-  }> {
-    const response: AxiosResponse = await this.api.get('/api/chat/models');
-    return response.data;
-  }
+  getAvailableModels: () =>
+    apiRequest<{
+      available_models: string[];
+      default_model: string;
+      fallback_models: string[];
+    }>('/api/chat/models'),
 
-  async getSystemStats(): Promise<SystemStats> {
-    const response: AxiosResponse<SystemStats> = await this.api.get('/api/status');
-    return response.data;
-  }
+  getSystemStats: () =>
+    apiRequest<SystemStats>('/api/status'),
 
-  async testChat(): Promise<any> {
-    const response: AxiosResponse = await this.api.post('/api/chat/test');
-    return response.data;
-  }
+  testChat: () =>
+    apiRequest<any>('/api/chat/test', { method: 'POST' }),
 
-  // Health check
-  async healthCheck(): Promise<{ status: string; timestamp: number; version: string }> {
-    const response: AxiosResponse = await this.api.get('/health');
-    return response.data;
-  }
-}
-
-export const apiService = new ApiService();
+  healthCheck: () =>
+    apiRequest<{ status: string; timestamp: number; version: string }>('/health'),
+};

@@ -1,224 +1,144 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { ChatMessage, ChatSession, WebSocketMessage } from '../types/chat.types';
-import { apiService } from '../services/api';
+import { useState, useEffect, useCallback } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+
 import { websocketService } from '../services/websocket';
+import type { ChatMessage, ChatSession, WebSocketMessage } from '../types/chat.types';
 
-interface UseChatReturn {
-  messages: ChatMessage[];
-  sessions: ChatSession[];
-  currentSessionId: string | null;
-  isLoading: boolean;
-  isTyping: boolean;
-  isConnected: boolean;
-  error: string | null;
-  sendMessage: (message: string) => void;
-  loadSession: (sessionId: string) => void;
-  createNewSession: () => void;
-  updateSessionTitle: (sessionId: string, title: string) => Promise<void>;
-  deleteSession: (sessionId: string) => Promise<void>;
-  loadSessions: () => Promise<void>;
-  clearError: () => void;
-}
+import {
+  useSessions,
+  useSessionMessages,
+  useSendMessage,
+  useUpdateSessionTitle,
+  useDeleteSession,
+  chatKeys
+} from './useChatQueries';
 
-export const useChat = (): UseChatReturn => {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
+export const useChat = () => {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
-  const messageQueue = useRef<ChatMessage[]>([]);
 
-  // Подключение к WebSocket
+  const queryClient = useQueryClient();
+
+  const { data: sessions = [], refetch: refetchSessions } = useSessions(20);
+  const { data: messages = [] } = useSessionMessages(currentSessionId || '', 50);
+
+  const sendMessageMutation = useSendMessage();
+  const updateTitleMutation = useUpdateSessionTitle();
+  const deleteSessionMutation = useDeleteSession();
+
+  // WebSocket остаётся без изменений
   useEffect(() => {
-    const connectWebSocket = async () => {
-      try {
-        await websocketService.connect();
-      } catch (err) {
-        console.error('Failed to connect WebSocket:', err);
-        setError('Ошибка подключения к серверу');
-      }
-    };
-
-    connectWebSocket();
-
-    // Подписка на сообщения WebSocket
-    const unsubscribeMessage = websocketService.onMessage(handleWebSocketMessage);
-    const unsubscribeConnection = websocketService.onConnectionChange(setIsConnected);
-
+    websocketService.connect().catch(err => {
+      console.error(err);
+      setError('Ошибка подключения');
+    });
+    const unsubMsg = websocketService.onMessage(handleWS);
+    const unsubConn = websocketService.onConnectionChange(setIsConnected);
     return () => {
-      unsubscribeMessage();
-      unsubscribeConnection();
+      unsubMsg();
+      unsubConn();
       websocketService.disconnect();
     };
   }, []);
 
-  // Обработка WebSocket сообщений
-  const handleWebSocketMessage = useCallback((message: WebSocketMessage) => {
-    switch (message.type) {
-      case 'connection':
-        console.log('Connected to WebSocket');
-        break;
-
+  const handleWS = useCallback((msg: WebSocketMessage) => {
+    switch (msg.type) {
       case 'typing':
-        setIsTyping(message.status === 'start');
+        setIsTyping(msg.status === 'start');
         break;
-
       case 'chat_response':
-        if (message.success && message.response) {
-          const newMessage: ChatMessage = {
+        if (msg.success && msg.response && msg.session_id) {
+          const newMsg: ChatMessage = {
             role: 'assistant',
-            content: message.response,
-            model_used: message.model_used,
-            response_time: message.response_time,
+            content: msg.response,
+            model_used: msg.model_used,
+            response_time: msg.response_time,
             created_at: new Date().toISOString(),
           };
-          
-          setMessages(prev => [...prev, newMessage]);
-          
-          // Обновляем текущую сессию
-          if (message.session_id) {
-            setCurrentSessionId(message.session_id);
-          }
+          queryClient.setQueryData(
+            chatKeys.sessionMessages(msg.session_id, 50),
+            old => old ? [...old, newMsg] : [newMsg]
+          );
+          queryClient.invalidateQueries(chatKeys.sessionsList(20));
+          setCurrentSessionId(msg.session_id);
         } else {
-          setError('Ошибка получения ответа от сервера');
+          setError('Ошибка ответа');
         }
         break;
-
       case 'sessions_list':
-        if (message.sessions) {
-          setSessions(message.sessions);
+        if (msg.sessions) {
+          queryClient.setQueryData(chatKeys.sessionsList(20), msg.sessions);
         }
         break;
-
       case 'messages_list':
-        if (message.messages) {
-          setMessages(message.messages);
+        if (msg.messages && currentSessionId) {
+          queryClient.setQueryData(
+            chatKeys.sessionMessages(currentSessionId, 50),
+            msg.messages
+          );
         }
         break;
-
       case 'error':
-        setError(message.message || 'Произошла ошибка');
+        setError(msg.message || 'Ошибка');
         break;
-
-      default:
-        console.log('Unknown message type:', message.type);
     }
-  }, []);
+  }, [currentSessionId, queryClient]);
 
-  // Отправка сообщения
-  const sendMessage = useCallback(async (message: string) => {
-    if (!message.trim()) return;
-
-    const userMessage: ChatMessage = {
-      role: 'user',
-      content: message,
-      created_at: new Date().toISOString(),
-    };
-
-    setMessages(prev => [...prev, userMessage]);
+  const sendMessage = useCallback(async (text: string) => {
+    if (!text.trim()) return;
     setIsLoading(true);
     setError(null);
-
+    websocketService.sendChatMessage(text, currentSessionId || undefined);
     try {
-      // Отправляем через WebSocket
-      websocketService.sendChatMessage(message, currentSessionId);
-      
-      // Также отправляем через REST API как fallback
-      const response = await apiService.sendMessage(message, currentSessionId);
-      
-      if (response.success) {
-        setCurrentSessionId(response.session_id);
-      }
-    } catch (err) {
-      console.error('Error sending message:', err);
-      setError('Ошибка отправки сообщения');
+      await sendMessageMutation.mutateAsync({ message: text, sessionId: currentSessionId || undefined });
+    } catch {
+      setError('Ошибка отправки');
     } finally {
       setIsLoading(false);
     }
-  }, [currentSessionId]);
+  }, [currentSessionId, sendMessageMutation]);
 
-  // Загрузка сессии
-  const loadSession = useCallback(async (sessionId: string) => {
+  const loadSession = useCallback((sid: string) => {
     setIsLoading(true);
     setError(null);
-
-    try {
-      // Загружаем через WebSocket
-      websocketService.requestSessionMessages(sessionId);
-      
-      // Также загружаем через REST API как fallback
-      const messages = await apiService.getSessionMessages(sessionId);
-      setMessages(messages);
-      setCurrentSessionId(sessionId);
-    } catch (err) {
-      console.error('Error loading session:', err);
-      setError('Ошибка загрузки сессии');
-    } finally {
-      setIsLoading(false);
-    }
+    websocketService.requestSessionMessages(sid);
+    setCurrentSessionId(sid);
+    setIsLoading(false);
   }, []);
 
-  // Создание новой сессии
-  const createNewSession = useCallback(() => {
-    setMessages([]);
+  const createNewSession = () => {
     setCurrentSessionId(null);
     setError(null);
-  }, []);
+  };
 
-  // Обновление заголовка сессии
-  const updateSessionTitle = useCallback(async (sessionId: string, title: string) => {
+  const updateSessionTitle = async (sid: string, title: string) => {
     try {
-      await apiService.updateSessionTitle(sessionId, title);
-      await loadSessions(); // Перезагружаем список сессий
-    } catch (err) {
-      console.error('Error updating session title:', err);
-      setError('Ошибка обновления заголовка сессии');
+      await updateTitleMutation.mutateAsync({ sessionId: sid, title });
+    } catch {
+      setError('Ошибка обновления');
     }
-  }, []);
+  };
 
-  // Удаление сессии
-  const deleteSession = useCallback(async (sessionId: string) => {
+  const deleteSession = async (sid: string) => {
     try {
-      await apiService.deleteSession(sessionId);
-      
-      if (currentSessionId === sessionId) {
-        createNewSession();
-      }
-      
-      await loadSessions(); // Перезагружаем список сессий
-    } catch (err) {
-      console.error('Error deleting session:', err);
-      setError('Ошибка удаления сессии');
+      await deleteSessionMutation.mutateAsync(sid);
+      if (sid === currentSessionId) createNewSession();
+    } catch {
+      setError('Ошибка удаления');
     }
-  }, [currentSessionId, createNewSession]);
+  };
 
-  // Загрузка списка сессий
-  const loadSessions = useCallback(async () => {
-    try {
-      // Загружаем через WebSocket
-      websocketService.requestSessions();
-      
-      // Также загружаем через REST API как fallback
-      const sessions = await apiService.getSessions();
-      setSessions(sessions);
-    } catch (err) {
-      console.error('Error loading sessions:', err);
-      setError('Ошибка загрузки списка сессий');
-    }
-  }, []);
+  const loadSessions = async () => {
+    websocketService.requestSessions();
+    await refetchSessions();
+  };
 
-  // Очистка ошибки
-  const clearError = useCallback(() => {
-    setError(null);
-  }, []);
+  const clearError = () => setError(null);
 
-  // Загружаем сессии при монтировании
-  useEffect(() => {
-    loadSessions();
-  }, [loadSessions]);
+  useEffect(() => { loadSessions(); }, []);
 
   return {
     messages,
